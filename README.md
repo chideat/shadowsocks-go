@@ -70,8 +70,8 @@ Command line options can override settings from configuration files. Use `-h` op
 shadowsocks-local -s server_address -p server_port -k password
     -m aes-128-cfb -c config.json
     -b local_address -l local_port
-shadowsocks-server -p server_port -k password
-    -m aes-128-cfb -c config.json
+shadowsocks-server -addr server_addr -k password
+    -m aes-256-cfb -c config.json
     -t timeout
 ```
 
