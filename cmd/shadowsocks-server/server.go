@@ -180,27 +180,27 @@ type PasswdManager struct {
 	portListener map[string]*PortListener
 }
 
-func (pm *PasswdManager) add(port, password string, listener net.Listener) {
+func (pm *PasswdManager) add(addr, password string, listener net.Listener) {
 	pm.Lock()
-	pm.portListener[port] = &PortListener{password, listener}
+	pm.portListener[addr] = &PortListener{password, listener}
 	pm.Unlock()
 }
 
-func (pm *PasswdManager) get(port string) (pl *PortListener, ok bool) {
+func (pm *PasswdManager) get(addr string) (pl *PortListener, ok bool) {
 	pm.Lock()
-	pl, ok = pm.portListener[port]
+	pl, ok = pm.portListener[addr]
 	pm.Unlock()
 	return
 }
 
-func (pm *PasswdManager) del(port string) {
-	pl, ok := pm.get(port)
+func (pm *PasswdManager) del(addr string) {
+	pl, ok := pm.get(addr)
 	if !ok {
 		return
 	}
 	pl.listener.Close()
 	pm.Lock()
-	delete(pm.portListener, port)
+	delete(pm.portListener, addr)
 	pm.Unlock()
 }
 
@@ -208,20 +208,20 @@ func (pm *PasswdManager) del(port string) {
 // port. A different approach would be directly change the password used by
 // that port, but that requires **sharing** password between the port listener
 // and password manager.
-func (pm *PasswdManager) updatePortPasswd(port, password string, auth bool) {
-	pl, ok := pm.get(port)
+func (pm *PasswdManager) updatePortPasswd(addr, password string, auth bool) {
+	pl, ok := pm.get(addr)
 	if !ok {
-		log.Printf("new port %s added\n", port)
+		log.Printf("new addr %s added\n", addr)
 	} else {
 		if pl.password == password {
 			return
 		}
-		log.Printf("closing port %s to update password\n", port)
+		log.Printf("closing addr %s to update password\n", addr)
 		pl.listener.Close()
 	}
-	// run will add the new port listener to passwdManager.
+	// run will add the new addr listener to passwdManager.
 	// So there maybe concurrent access to passwdManager and we need lock to protect it.
-	go run(port, password, auth)
+	go run(addr, password, auth)
 }
 
 var passwdManager = PasswdManager{portListener: map[string]*PortListener{}}
@@ -239,16 +239,16 @@ func updatePasswd() {
 	if err = unifyPortPassword(config); err != nil {
 		return
 	}
-	for port, passwd := range config.PortPassword {
-		passwdManager.updatePortPasswd(port, passwd, config.Auth)
+	for addr, passwd := range config.PortPassword {
+		passwdManager.updatePortPasswd(addr, passwd, config.Auth)
 		if oldconfig.PortPassword != nil {
-			delete(oldconfig.PortPassword, port)
+			delete(oldconfig.PortPassword, addr)
 		}
 	}
-	// port password still left in the old config should be closed
-	for port, _ := range oldconfig.PortPassword {
-		log.Printf("closing port %s as it's deleted\n", port)
-		passwdManager.del(port)
+	// addr password still left in the old config should be closed
+	for addr, _ := range oldconfig.PortPassword {
+		log.Printf("closing port %s as it's deleted\n", addr)
+		passwdManager.del(addr)
 	}
 	log.Println("password updated")
 }
@@ -267,15 +267,15 @@ func waitSignal() {
 	}
 }
 
-func run(port, password string, auth bool) {
-	ln, err := net.Listen("tcp", ":"+port)
+func run(addr, password string, auth bool) {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Printf("error listening port %v: %v\n", port, err)
+		log.Printf("error listening addr %v: %v\n", addr, err)
 		os.Exit(1)
 	}
-	passwdManager.add(port, password, ln)
+	passwdManager.add(addr, password, ln)
 	var cipher *ss.Cipher
-	log.Printf("server listening port %v ...\n", port)
+	log.Printf("server listening addr %v ...\n", addr)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -285,10 +285,10 @@ func run(port, password string, auth bool) {
 		}
 		// Creating cipher upon first connection.
 		if cipher == nil {
-			log.Println("creating cipher for port:", port)
+			log.Println("creating cipher for addr:", addr)
 			cipher, err = ss.NewCipher(config.Method, password)
 			if err != nil {
-				log.Printf("Error generating cipher for port: %s %v\n", port, err)
+				log.Printf("Error generating cipher for addr: %s %v\n", addr, err)
 				conn.Close()
 				continue
 			}
@@ -298,20 +298,19 @@ func run(port, password string, auth bool) {
 }
 
 func enoughOptions(config *ss.Config) bool {
-	return config.ServerPort != 0 && config.Password != ""
+	return config.ServerAddr != "" && config.Password != ""
 }
 
 func unifyPortPassword(config *ss.Config) (err error) {
 	if len(config.PortPassword) == 0 { // this handles both nil PortPassword and empty one
 		if !enoughOptions(config) {
-			fmt.Fprintln(os.Stderr, "must specify both port and password")
+			fmt.Fprintln(os.Stderr, "must specify both addr and password")
 			return errors.New("not enough options")
 		}
-		port := strconv.Itoa(config.ServerPort)
-		config.PortPassword = map[string]string{port: config.Password}
+		config.PortPassword = map[string]string{config.ServerAddr: config.Password}
 	} else {
-		if config.Password != "" || config.ServerPort != 0 {
-			fmt.Fprintln(os.Stderr, "given port_password, ignore server_port and password option")
+		if config.Password != "" || config.ServerAddr != "" {
+			fmt.Fprintln(os.Stderr, "given addr_password, ignore server_addr and password option")
 		}
 	}
 	return
@@ -330,7 +329,7 @@ func main() {
 	flag.BoolVar(&printVer, "version", false, "print version")
 	flag.StringVar(&configFile, "c", "config.json", "specify config file")
 	flag.StringVar(&cmdConfig.Password, "k", "", "password")
-	flag.IntVar(&cmdConfig.ServerPort, "p", 0, "server port")
+	flag.StringVar(&cmdConfig.ServerAddr, "addr", ":2016", "server addr")
 	flag.IntVar(&cmdConfig.Timeout, "t", 300, "timeout in seconds")
 	flag.StringVar(&cmdConfig.Method, "m", "", "encryption method, default: aes-256-cfb")
 	flag.IntVar(&core, "core", 0, "maximum number of CPU cores to use, default is determinied by Go runtime")
@@ -374,8 +373,8 @@ func main() {
 	if core > 0 {
 		runtime.GOMAXPROCS(core)
 	}
-	for port, password := range config.PortPassword {
-		go run(port, password, config.Auth)
+	for addr, password := range config.PortPassword {
+		go run(addr, password, config.Auth)
 	}
 
 	waitSignal()
